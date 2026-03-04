@@ -1,206 +1,376 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, addDoc, onSnapshot, query, updateDoc } from 'firebase/firestore';
 import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  onSnapshot 
-} from 'firebase/firestore';
-import { LogIn, User, Lock, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+  PlusCircle, 
+  ClipboardList, 
+  User, 
+  Phone, 
+  Camera, 
+  Send, 
+  Clock, 
+  CheckCircle2, 
+  AlertCircle,
+  Truck,
+  Search,
+  ChevronRight,
+  Filter,
+  Loader2
+} from 'lucide-react';
 
-/**
- * FIXED: Removed 'import.meta.env' which was causing compilation errors.
- * Using the globally provided environment variables directly.
- */
+// Configuração do Firebase corrigida para o ambiente Canvas
 const firebaseConfig = typeof __firebase_config !== 'undefined' 
   ? JSON.parse(__firebase_config) 
   : {};
 
 const appId = typeof __app_id !== 'undefined' 
   ? __app_id 
-  : 'meu-app-autenticacao';
+  : 'lumae-os-manager';
 
-// Safe initialization
+// Inicialização segura
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+// Definição dos processos baseados no fluxograma da imagem
+const PROCESSOS = {
+  SERVICOS_COMUNS: { nome: 'Serviços Comuns', prazo: '15 dias', cor: 'bg-blue-500' },
+  GRAVACOES_ALIANCAS: { nome: 'Gravações de Alianças', prazo: '7 dias', cor: 'bg-green-500' },
+  GRAVACOES_PLACAS: { nome: 'Gravações de Pulseiras/Placas', prazo: '10 dias', cor: 'bg-pink-500' },
+  ANALISES: { nome: 'Análises', prazo: '30 dias', cor: 'bg-red-500' },
+  ORCAMENTOS: { nome: 'Orçamentos', prazo: '20 dias', cor: 'bg-orange-500' },
+  NOVO_BANHO: { nome: 'Novo Banho', prazo: '60 dias', cor: 'bg-yellow-500' }
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
+  const [view, setView] = useState('list');
+  const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [authStatus, setAuthStatus] = useState('A inicializar...');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  const [formData, setFormData] = useState({
+    numeroOS: '',
+    vendedor: '',
+    clienteNome: '',
+    clienteTelefone: '',
+    tipoServico: 'SERVICOS_COMUNS',
+    foto: null
+  });
 
-  // Form states
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-
+  // Autenticação Inicial
   useEffect(() => {
-    const initAuth = async () => {
+    const init = async () => {
       try {
-        setAuthStatus('A verificar credenciais...');
-        
-        /**
-         * RULE 3: Auth before queries. 
-         * Using the provided __initial_auth_token if available.
-         */
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+          await signInAnonymously(auth); // Fallback simples para este caso
         } else {
           await signInAnonymously(auth);
         }
       } catch (err) {
-        console.error("Erro na autenticação:", err);
-        setError("Falha na ligação ao servidor de autenticação.");
+        console.error("Erro auth:", err);
       }
     };
-
-    initAuth();
-
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-      if (currentUser) {
-        setAuthStatus('Ligado com sucesso');
-      }
-    });
-
-    return () => unsubscribe();
+    init();
+    const unsub = onAuthStateChanged(auth, setUser);
+    return () => unsub();
   }, []);
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setIsLoggingIn(true);
-    setError(null);
+  // Busca de Ordens em Tempo Real (Regra 1 e 2 do Firestore)
+  useEffect(() => {
+    if (!user) return;
+    
+    setLoading(true);
+    // Caminho obrigatório: /artifacts/{appId}/public/data/{collectionName}
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+    
+    const unsub = onSnapshot(q, (snapshot) => {
+      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Ordenação manual em memória (Regra 2)
+      const sortedDocs = docs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      setOrders(sortedDocs);
+      setLoading(false);
+    }, (err) => {
+      console.error("Erro Firestore:", err);
+      setLoading(false);
+    });
 
-    if (!user) {
-      setError("Aguarde a ligação inicial antes de tentar entrar.");
-      setIsLoggingIn(false);
-      return;
-    }
+    return () => unsub();
+  }, [user]);
 
-    try {
-      /**
-       * RULE 1: Using strict paths for Firestore.
-       * Path: /artifacts/{appId}/users/{userId}/{collectionName}
-       */
-      const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'profile');
-      
-      await setDoc(userDocRef, {
-        email: email,
-        lastLogin: new Date().toISOString(),
-        status: 'active'
-      }, { merge: true });
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+  };
 
-      setAuthStatus('Perfil verificado e pronto!');
-    } catch (err) {
-      setError("Erro ao validar permissões no banco de dados.");
-      console.error(err);
-    } finally {
-      setIsLoggingIn(false);
+  const handlePhotoChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => setFormData(prev => ({ ...prev, foto: reader.result }));
+      reader.readAsDataURL(file);
     }
   };
 
-  if (loading) {
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!user || isSubmitting) return;
+
+    setIsSubmitting(true);
+    try {
+      const newOrder = {
+        ...formData,
+        status: 'Lançado',
+        etapaAtual: 'Escritório/Conferência',
+        createdAt: new Date().toISOString(),
+        prazoEstimado: PROCESSOS[formData.tipoServico].prazo,
+        userId: user.uid
+      };
+
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), newOrder);
+      
+      // Limpar formulário e voltar para lista
+      setFormData({ numeroOS: '', vendedor: '', clienteNome: '', clienteTelefone: '', tipoServico: 'SERVICOS_COMUNS', foto: null });
+      setView('list');
+    } catch (err) {
+      console.error(err);
+      alert("Erro ao salvar. Verifique a ligação.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const updateStatus = async (orderId, novoStatus, novaEtapa) => {
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId);
+      await updateDoc(docRef, { 
+        status: novoStatus,
+        etapaAtual: novaEtapa || novoStatus,
+        updatedAt: new Date().toISOString() 
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  if (!user && loading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50">
-        <Loader2 className="w-10 h-10 text-blue-500 animate-spin mb-4" />
-        <p className="text-slate-600 font-medium animate-pulse">{authStatus}</p>
+      <div className="flex flex-col items-center justify-center min-h-screen bg-white">
+        <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+        <p className="mt-4 text-slate-500 font-medium">A carregar sistema Lumaê...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
-        <div className="p-8">
-          <div className="flex justify-center mb-6">
-            <div className="p-3 bg-blue-100 rounded-full">
-              <LogIn className="w-8 h-8 text-blue-600" />
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20">
+      {/* Header Fixo */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
+        <div className="max-w-xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black shadow-lg shadow-blue-200">L</div>
+            <div>
+              <h1 className="text-lg font-bold leading-none">Lumaê</h1>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Gestão de Fluxo</p>
             </div>
           </div>
-          
-          <h2 className="text-2xl font-bold text-center text-slate-800 mb-2">
-            Bem-vindo de volta
-          </h2>
-          <p className="text-center text-slate-500 mb-8">
-            Insira as suas credenciais para continuar
-          </p>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div className="relative">
-              <User className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
-              <input
-                type="email"
-                placeholder="Endereço de Email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                required
-              />
-            </div>
-
-            <div className="relative">
-              <Lock className="absolute left-3 top-3 w-5 h-5 text-slate-400" />
-              <input
-                type="password"
-                placeholder="Palavra-passe"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                required
-              />
-            </div>
-
-            {error && (
-              <div className="flex items-center gap-2 p-3 bg-red-50 text-red-600 rounded-lg text-sm border border-red-100">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            {authStatus === 'Perfil verificado e pronto!' && (
-              <div className="flex items-center gap-2 p-3 bg-green-50 text-green-600 rounded-lg text-sm border border-green-100">
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                <span>Entrada autorizada com sucesso!</span>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={isLoggingIn}
-              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-200 flex items-center justify-center gap-2 disabled:opacity-70"
-            >
-              {isLoggingIn ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  A processar...
-                </>
-              ) : (
-                'Entrar no Sistema'
-              )}
-            </button>
-          </form>
+          <button 
+            onClick={() => setView(view === 'list' ? 'create' : 'list')}
+            className="bg-blue-600 text-white p-2 rounded-xl hover:bg-blue-700 transition-all shadow-md shadow-blue-100"
+          >
+            {view === 'list' ? <PlusCircle size={24} /> : <ClipboardList size={24} />}
+          </button>
         </div>
+      </header>
 
-        <div className="px-8 py-4 bg-slate-50 border-t border-slate-100">
-          <div className="flex justify-between items-center text-xs text-slate-400">
-            <span>ID: {user?.uid || 'N/A'}</span>
-            <span className="flex items-center gap-1">
-              <div className={`w-2 h-2 rounded-full ${user ? 'bg-green-400' : 'bg-red-400'}`}></div>
-              {user ? 'Ligado' : 'Desligado'}
-            </span>
+      <main className="max-w-xl mx-auto p-4">
+        {view === 'create' ? (
+          <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 animate-in fade-in slide-in-from-bottom-4">
+            <h2 className="text-xl font-bold mb-6 text-slate-800">Nova Ordem de Serviço</h2>
+            
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-500 uppercase ml-1">Nº da OS</label>
+                  <input 
+                    name="numeroOS" 
+                    value={formData.numeroOS} 
+                    onChange={handleInputChange}
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all" 
+                    placeholder="0000" required 
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-500 uppercase ml-1">Vendedor</label>
+                  <input 
+                    name="vendedor" 
+                    value={formData.vendedor} 
+                    onChange={handleInputChange}
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition-all" 
+                    placeholder="Nome" required 
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Cliente</label>
+                <div className="relative">
+                  <User className="absolute left-4 top-3.5 w-5 h-5 text-slate-400" />
+                  <input 
+                    name="clienteNome" 
+                    value={formData.clienteNome} 
+                    onChange={handleInputChange}
+                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none" 
+                    placeholder="Nome do cliente" required 
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Telemóvel / WhatsApp</label>
+                <div className="relative">
+                  <Phone className="absolute left-4 top-3.5 w-5 h-5 text-slate-400" />
+                  <input 
+                    name="clienteTelefone" 
+                    value={formData.clienteTelefone} 
+                    onChange={handleInputChange}
+                    className="w-full pl-12 pr-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none" 
+                    placeholder="(00) 00000-0000" required 
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Tipo de Serviço</label>
+                <select 
+                  name="tipoServico" 
+                  value={formData.tipoServico} 
+                  onChange={handleInputChange}
+                  className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-medium text-slate-700"
+                >
+                  {Object.entries(PROCESSOS).map(([key, value]) => (
+                    <option key={key} value={key}>{value.nome} ({value.prazo})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Foto da Peça</label>
+                <div className="flex items-center justify-center w-full">
+                  <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-slate-200 border-dashed rounded-2xl cursor-pointer bg-slate-50 hover:bg-blue-50 hover:border-blue-300 transition-all overflow-hidden">
+                    {formData.foto ? (
+                      <img src={formData.foto} alt="Preview" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="flex flex-col items-center">
+                        <Camera className="w-8 h-8 text-slate-400 mb-2" />
+                        <span className="text-sm text-slate-500 font-medium">Capturar ou Anexar</span>
+                      </div>
+                    )}
+                    <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+                  </label>
+                </div>
+              </div>
+
+              <button 
+                type="submit" 
+                disabled={isSubmitting}
+                className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl hover:bg-blue-700 shadow-xl shadow-blue-200 transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
+              >
+                {isSubmitting ? <Loader2 className="animate-spin" /> : <><Send size={20} /> LANÇAR E NOTIFICAR</>}
+              </button>
+            </form>
           </div>
-        </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Barra de Busca Simples */}
+            <div className="bg-white p-2 rounded-2xl border border-slate-200 flex items-center gap-3 px-4 shadow-sm">
+              <Search className="text-slate-400" size={18} />
+              <input type="text" placeholder="Procurar OS ou Cliente..." className="bg-transparent border-none outline-none w-full text-sm py-2" />
+            </div>
+
+            {loading ? (
+              <div className="flex flex-col items-center py-20 text-slate-400">
+                <Loader2 className="animate-spin mb-2" />
+                <p className="text-sm font-medium">A atualizar dados...</p>
+              </div>
+            ) : orders.length === 0 ? (
+              <div className="text-center py-16 bg-white rounded-3xl border-2 border-slate-100 border-dashed">
+                <div className="bg-slate-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
+                  <ClipboardList size={32} />
+                </div>
+                <p className="text-slate-500 font-medium">Ainda não há ordens registadas.</p>
+                <button onClick={() => setView('create')} className="mt-4 text-blue-600 font-bold text-sm">Criar a primeira agora</button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {orders.map((os) => (
+                  <div key={os.id} className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 rounded-full ${PROCESSOS[os.tipoServico].cor}`}></span>
+                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">#{os.numeroOS} • {PROCESSOS[os.tipoServico].nome}</span>
+                        </div>
+                        <h3 className="font-bold text-slate-800 text-lg leading-tight">{os.clienteNome}</h3>
+                      </div>
+                      <div className="bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-[10px] font-black flex items-center gap-1">
+                        <Clock size={12} /> {os.prazoEstimado}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3 mb-5 text-[11px]">
+                      <div className="bg-slate-50 p-2 rounded-xl text-center">
+                        <p className="text-slate-400 font-bold mb-0.5 uppercase">Vendedor</p>
+                        <p className="font-bold text-slate-700">{os.vendedor}</p>
+                      </div>
+                      <div className="col-span-2 bg-slate-50 p-2 rounded-xl flex items-center gap-3">
+                         <div className="h-8 w-8 bg-white rounded-lg flex items-center justify-center shadow-sm text-blue-600">
+                            <Truck size={16} />
+                         </div>
+                         <div>
+                            <p className="text-slate-400 font-bold uppercase">Etapa Atual</p>
+                            <p className="font-bold text-slate-700 truncate">{os.status === 'Finalizado' ? 'Pronto na Loja' : os.etapaAtual}</p>
+                         </div>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 pt-2 border-t border-slate-100">
+                      <button 
+                        onClick={() => updateStatus(os.id, 'Em Produção', 'Enviado p/ Roberto/Oficina')}
+                        className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl text-[11px] hover:bg-slate-200 transition-all uppercase"
+                      >
+                        Mover Fluxo
+                      </button>
+                      <button 
+                        onClick={() => updateStatus(os.id, 'Finalizado', 'Disponível na Loja')}
+                        className="flex-1 py-3 bg-green-500 text-white font-bold rounded-2xl text-[11px] hover:bg-green-600 transition-all shadow-lg shadow-green-100 uppercase flex items-center justify-center gap-1"
+                      >
+                        <CheckCircle2 size={14} /> Finalizar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* Navegação Mobile Inferior */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-8 py-3 flex justify-between items-center z-30 md:hidden">
+        <button onClick={() => setView('list')} className={`flex flex-col items-center gap-1 ${view === 'list' ? 'text-blue-600' : 'text-slate-400'}`}>
+          <ClipboardList size={22} />
+          <span className="text-[10px] font-black uppercase">Ordens</span>
+        </button>
+        <button onClick={() => setView('create')} className={`flex flex-col items-center gap-1 ${view === 'create' ? 'text-blue-600' : 'text-slate-400'}`}>
+          <PlusCircle size={22} />
+          <span className="text-[10px] font-black uppercase">Lançar</span>
+        </button>
+        <button className="flex flex-col items-center gap-1 text-slate-400">
+          <User size={22} />
+          <span className="text-[10px] font-black uppercase">Admin</span>
+        </button>
       </div>
     </div>
   );
