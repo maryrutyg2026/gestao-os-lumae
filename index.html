@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, addDoc, onSnapshot, query, updateDoc } from 'firebase/firestore';
 import { 
   PlusCircle, 
@@ -59,42 +59,56 @@ export default function App() {
     foto: null
   });
 
-  // Autenticação Inicial
+  // REGRA 3: Autenticação antes de qualquer operação no Firestore
   useEffect(() => {
-    const init = async () => {
+    const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInAnonymously(auth); // Fallback simples para este caso
+          await signInWithCustomToken(auth, __initial_auth_token);
         } else {
           await signInAnonymously(auth);
         }
       } catch (err) {
-        console.error("Erro auth:", err);
+        console.error("Erro na autenticação:", err);
       }
     };
-    init();
-    const unsub = onAuthStateChanged(auth, setUser);
+    initAuth();
+    
+    const unsub = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (!currentUser) {
+        setLoading(false);
+      }
+    });
     return () => unsub();
   }, []);
 
-  // Busca de Ordens em Tempo Real (Regra 1 e 2 do Firestore)
+  // Busca de Ordens em Tempo Real (Regras 1, 2 e 3 do Firestore)
   useEffect(() => {
+    // REGRA 3: Guard para prevenir operações sem usuário autenticado
     if (!user) return;
     
     setLoading(true);
-    // Caminho obrigatório: /artifacts/{appId}/public/data/{collectionName}
-    const q = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+    // REGRA 1: Caminho obrigatório /artifacts/{appId}/public/data/{collectionName}
+    const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
     
-    const unsub = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      // Ordenação manual em memória (Regra 2)
-      const sortedDocs = docs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      setOrders(sortedDocs);
-      setLoading(false);
-    }, (err) => {
-      console.error("Erro Firestore:", err);
-      setLoading(false);
-    });
+    // REGRA 2: Sem queries complexas (orderBy/limit), ordenamos em JS
+    const unsub = onSnapshot(ordersRef, 
+      (snapshot) => {
+        const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Ordenação manual por data de criação (descendente)
+        const sortedDocs = docs.sort((a, b) => {
+          return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+        });
+        setOrders(sortedDocs);
+        setLoading(false);
+      }, 
+      (err) => {
+        // Callback de erro obrigatório para evitar falhas silenciosas
+        console.error("Erro Firestore (Permissões):", err);
+        setLoading(false);
+      }
+    );
 
     return () => unsub();
   }, [user]);
@@ -115,6 +129,7 @@ export default function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // REGRA 3: Guard de autenticação
     if (!user || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -128,20 +143,21 @@ export default function App() {
         userId: user.uid
       };
 
+      // REGRA 1: Uso do caminho de coleção pública correto
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), newOrder);
       
-      // Limpar formulário e voltar para lista
       setFormData({ numeroOS: '', vendedor: '', clienteNome: '', clienteTelefone: '', tipoServico: 'SERVICOS_COMUNS', foto: null });
       setView('list');
     } catch (err) {
-      console.error(err);
-      alert("Erro ao salvar. Verifique a ligação.");
+      console.error("Erro ao salvar:", err);
+      alert("Erro ao salvar. Verifique as permissões de gravação.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const updateStatus = async (orderId, novoStatus, novaEtapa) => {
+    if (!user) return;
     try {
       const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'orders', orderId);
       await updateDoc(docRef, { 
@@ -150,11 +166,11 @@ export default function App() {
         updatedAt: new Date().toISOString() 
       });
     } catch (err) {
-      console.error(err);
+      console.error("Erro ao atualizar status:", err);
     }
   };
 
-  if (!user && loading) {
+  if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-white">
         <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
@@ -165,7 +181,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20">
-      {/* Header Fixo */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
         <div className="max-w-xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -283,7 +298,6 @@ export default function App() {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* Barra de Busca Simples */}
             <div className="bg-white p-2 rounded-2xl border border-slate-200 flex items-center gap-3 px-4 shadow-sm">
               <Search className="text-slate-400" size={18} />
               <input type="text" placeholder="Procurar OS ou Cliente..." className="bg-transparent border-none outline-none w-full text-sm py-2" />
@@ -344,7 +358,7 @@ export default function App() {
                       </button>
                       <button 
                         onClick={() => updateStatus(os.id, 'Finalizado', 'Disponível na Loja')}
-                        className="flex-1 py-3 bg-green-500 text-white font-bold rounded-2xl text-[11px] hover:bg-green-600 transition-all shadow-lg shadow-green-100 uppercase flex items-center justify-center gap-1"
+                        className="flex-1 py-3 bg-green-500 text-white font-black rounded-2xl text-[11px] hover:bg-green-600 transition-all shadow-lg shadow-green-100 uppercase flex items-center justify-center gap-1 active:scale-95"
                       >
                         <CheckCircle2 size={14} /> Finalizar
                       </button>
@@ -357,7 +371,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Navegação Mobile Inferior */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-8 py-3 flex justify-between items-center z-30 md:hidden">
         <button onClick={() => setView('list')} className={`flex flex-col items-center gap-1 ${view === 'list' ? 'text-blue-600' : 'text-slate-400'}`}>
           <ClipboardList size={22} />
